@@ -1,7 +1,7 @@
 import os
 from dotenv import load_dotenv
 # from notion_client import Client # NotionSDKは使わない
-# import asyncio
+import asyncio
 from openai import OpenAI
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -16,15 +16,12 @@ print(notion_token)
 # 1. OpenAIの初期化
 openai_client = OpenAI() # APIキーは環境変数から自動的に取得される
 
-import asyncio
 # 2. Notion MCPサーバーの起動設定 (npxを使用)
 server_params = StdioServerParameters(
     command="npx",
     # args=["-y", "@modelcontextprotocol/server-notion"],
     args=["-y", "@notionhq/notion-mcp-server"],
-    # env={"NOTION_ACCESS_TOKEN": notion_token}
-    #env={"NOTION_API_KEY": notion_token}
-    env={**os.environ, "NOTION_API_KEY": notion_token} # これに変更する
+    env={"NOTION_ACCESS_TOKEN": notion_token}
 )
 print("Notion MCPサーバーを起動中...")
 
@@ -45,27 +42,11 @@ async def main():
             print(f"取得したツール数: {len(mcp_tools)}")
 
             # 41. OpenAIに渡す形式に変換（McpTool -> OpenAI Function Def）
-            # 修正前
             openai_tools_format = [{"type": "function", "function": tool.dict()} for tool in mcp_tools]
-            # 修正後
-            openai_tools_format = [
-                 {
-                     "type": "function",
-                     "function": {
-                     "name": tool.name,
-                     "description": tool.description,
-                     "parameters": tool.inputSchema,  # 'inputSchema' を 'parameters' として渡す
-                    },
-                 }
-                for tool in mcp_tools
-        ]
 
             # 5. ユーザーからの指示
-            # 修正前
-            # user_prompt = "Notionで『2025年の目標』というタイトルの新しいページを作って、内容は『MCPをマスターする』にして。"
-            # 修正後
-            user_prompt = "Notionのページ（ID: 1a0aad9ae143406989bb12705ba1d58b）の中に、『2025年の目標』というタイトルの新しいページを作って。"
-
+            user_prompt = "Notionで『2025年の目標』というタイトルの新しいページを作って、内容は『MCPをマスターする』にして。"
+            
             # 6. OpenAIにツール情報を渡して実行（Function Callingの仕組み）
             # 本来はループを回してツール実行結果を返しますが、ここでは概念を示します
             response = openai_client.chat.completions.create(
