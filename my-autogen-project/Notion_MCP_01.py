@@ -46,7 +46,7 @@ async def main():
 
             # 41. OpenAIに渡す形式に変換（McpTool -> OpenAI Function Def）
             # 修正前
-            openai_tools_format = [{"type": "function", "function": tool.dict()} for tool in mcp_tools]
+            # openai_tools_format = [{"type": "function", "function": tool.dict()} for tool in mcp_tools]
             # 修正後
             openai_tools_format = [
                  {
@@ -64,9 +64,8 @@ async def main():
             # 修正前
             # user_prompt = "Notionで『2025年の目標』というタイトルの新しいページを作って、内容は『MCPをマスターする』にして。"
             # 修正後
-            user_prompt = "Notionのページ（ID: 1a0aad9ae143406989bb12705ba1d58b）の中に、『2025年の目標』というタイトルの新しいページを作って。"
-
-            # 6. OpenAIにツール情報を渡して実行（Function Callingの仕組み）
+            user_prompt = "Notionのページ（ID: 1a0aad9ae143406989bb12705ba1d58b）の中に、『2025年の目標Test2』というタイトルの新しいページを作って。"
+                        # 6. OpenAIにツール情報を渡して実行（Function Callingの仕組み）
             # 本来はループを回してツール実行結果を返しますが、ここでは概念を示します
             response = openai_client.chat.completions.create(
                 model="gpt-4o",

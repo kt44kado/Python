@@ -4,3 +4,15 @@ venv/
 env/
 ENV/
 .env
+
+.venv/
+venv/
+env/
+ENV/
+.env
+
+.venv/
+venv/
+env/
+ENV/
+.env

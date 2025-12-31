@@ -1,0 +1,319 @@
+.OpenAI Platfrm ChatがNotion_MCP>pyを元に変換したコード
+
+..import
+────┐      ┌─
+# import├───┤import os
+────┘      │import json
+                │import threading
+                │import asyncio
+                │from dotenv import load_dotenv
+                │
+                │from mcp import ClientSession, StdioServerParameters
+                │from mcp.client.stdio import stdio_client
+                │
+                │import autogen
+                └──
+              
+..class McpNotionClient  
+──
+class McpNotionClient:
+# Notion MCP server をバックグラウンドスレッド(専用event loop)で起動し、
+# 同期関数から tool call できるようにするラッパー。
+# 『MCPは非同期なので、AutoGenから使いやすくするためのクラスや関数を定義』
+# mainコードのなかで、mcp_client = McpNotionClient でインスタンス化され、MCPサーバーを操作できる
+─┬──────────────────────────────────────────────
+...def __init__(self, notion_api_key: str):
+  │# まとめると
+  │# このコードは、「Notionを操作する機能をAIが使えるように、専用の通信プログラム（MCPサーバー）を
+  │# バックグラウンドで起動し、APIキーを使って連携する準備を整えている」状態を定義しています。
+  │# Notionツールを使えるようにする「MCPクライアント」クラスの初期化（コンストラクタ）
+  │def __init__(self, notion_api_key: str):
+  │    self.notion_api_key = notion_api_key # Notion APIを利用するためのキーを保持
+  │# MCPクライアントは「非同期（asyncio）」で動きますが、AutoGenなどのメイン処理を
+  │# 止めないために「別スレッド」で管理する準備をしています。
+  │
+  │# MCP通信を専用に行うためのバックグラウンドスレッドと、非同期イベントループの入れ物
+  │    self._thread = None
+  │    self._loop = None
+  │# 「接続の準備が完了したか」をメイン処理側から確認するためのフラグ
+  │    self._ready = threading.Event()
+  │    self._shutdown = None  # asyncio.Event (loop上で作る)
+  │    self._session = None
+  │
+  │    self.tools = []  # MCP tool list(格納するための空リスト)
+  │
+  │    # Notionツールを提供するプログラムをどう起動するか定義
+  │    self.server_params = StdioServerParameters(
+  │        command="npx", # Node.jsのパッケージを実行するコマンドを使う。
+  │        # Notion公式のMCPサーバーをインストール不要（-y）で即実行
+  │        args=["-y", "@notionhq/notion-mcp-server"],
+  │        # コンピュータの環境変数にNotion APIキーを追加して、サーバーに渡す。
+  │        env={**os.environ, "NOTION_API_KEY": self.notion_api_key},
+  │    )
+  │
+  │# 全体のイメージ
+  │# 「裏側でNotion連携プログラムを立ち上げ、それが『準備OK！』と言うまで最大1分間待つ。
+  │# もし立ち上がらなければエラーを出して教えてくれる」という、安全な起動処理を担っています。
+  │# 「MCPクライアントをバックグラウンド（別スレッド）で起動し、接続が完了するまで待機する」という処理
+...def start(self):
+  │def start(self):
+  │# MCPサーバーとの通信処理（self._thread_main）を、メインのプログラムとは別の「スレッド」で実行する準備
+  │# daemon=Trueで、メインのプログラムが終了したときに、このスレッドも一緒に自動終了
+  │    self._thread = threading.Thread(target=self._thread_main, daemon=True)
+  │    # 実際にスレッドを起動し、バックグラウンドでMCPサーバーへの接続を開始
+  │    self._thread.start()
+  │    # 別スレッド側で「準備ができた（self._ready.set()）」が送られてくるのを最大60秒間待ちます。
+  │    # これがないと、接続が終わっていないのにAIがツールを使おうとしてエラーになってしまいます。
+  │    self._ready.wait(timeout=60)
+  │    # 60秒経っても準備が完了しなかった場合、「タイムアウト」と判断
+  │    if not self._ready.is_set():
+  │        #「MCP Notionクライアントが時間内に起動できなかった」エラーを発生させ、プログラムを停止
+  │        raise RuntimeError("MCP Notion client failed to become ready in time.")
+  │
+  │# 「ただ電源を切るのではなく、PCのシャットダウン処理を正しく呼び出し、すべての作業が
+  │# 保存・終了されるのを待ってから電源を落とす」ような、非常に丁寧な終了手順を踏んでいます。
+  │# このコードは、「バックグラウンドで動いているMCPクライアント（別スレッドの非同期イベントループ）を、
+  │# 安全かつ確実に停止させる」ための終了処理（クリーンアップ）です。
+...def close(self):
+  │def close(self):
+  │# 1. 起動状態の確認
+  │# そもそもイベントループ（通信の基盤）が動いていなければ、何もせず終了します。
+  │    if not self._loop:
+  │        return
+  │    # runner側の await self._shutdown.wait() を解除
+  │# 2. 非同期のシャットダウン処理を実行
+  │# メインスレッドから別スレッドで動いているループに対して「終了用の関数（_async_shutdown）」を実行するよう命令
+  │# .result(timeout=30)で、シャットダウン処理が完了するのを最大30秒待ちます。
+  │    asyncio.run_coroutine_threadsafe(self._async_shutdown(), self._loop).result(timeout=30)
+  │# 3. イベントループの停止
+  │# 非同期処理の「回転（ループ）」自体を止めるように指示を出します。
+  │    self._loop.call_soon_threadsafe(self._loop.stop)
+  │# 4. スレッドの合流（完了待ち）
+  │# バックグラウンドで動いていたスレッドが完全に消滅するのを待ちます。
+  │# これにより、メモリリークや「プログラムが終了したのに裏でプロセスが残っている」という状態を防ぎます。
+  │    if self._thread:
+  │        self._thread.join(timeout=30)
+  │
+  │# 全体の役割
+  │#「AutoGen（AI側）から『Notionのページを作って』と言われたときに、
+  │# 裏側で動いている非同期の通信システムにその依頼を投げ、結果が出るまで待ってからAIに報告する」という、
+  │# 通訳兼連絡係のような動きをしています。
+  │
+  │#「AutoGen（同期処理）からMCP（非同期処理）のツールを呼び出すための橋渡し（ブリッジ）」の役割を果たす関数です。
+  │# AutoGenは通常、関数を「普通の関数（同期）」として実行しようとしますが、MCPの操作
+  │# は「非同期（asyncio）」で行われるため、そのギャップを埋める必要があります。
+...def call_tool(self, tool_name: str, arguments: dict):
+  │def call_tool(self, tool_name: str, arguments: dict):
+  │    """同期API: AutoGenのfunction executionから呼ぶ想定"""
+  │    # 準備確認: MCPサーバーとの接続完了チェック。準備ができていなければエラー（RuntimeError）を投げます。
+  │    if not self._ready.is_set():
+  │        raise RuntimeError("MCP Notion client is not ready yet.")
+  │        # コルーチンの作成: 指定されたツール名と引数を使って、MCPサーバーにツール実行を依頼する
+  │        # 「予約票（コルーチン）」を作成します。この時点ではまだ実行されません。
+  │    coro = self._session.call_tool(name=tool_name, arguments=arguments)
+  │    # スレッド間の橋渡し: バックグラウンドで動いている専用のスレッド（self._loop）に対して、
+  │    # 「この予約票を実行してきて」と命令を出します。
+  │    # fut（フューチャー）という、後で結果を受け取るためのチケットが返されます。
+  │    fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
+  │    # 結果の待機: 命令した処理が終わるのを最大60秒間待ちます。処理が終わると、
+  │    # Notionから返ってきた結果（ページ作成の成否など）をメインの処理に返します。
+  │    return fut.result(timeout=60)
+  │
+  │# 全体の役割
+  │#「別の作業部屋（スレッド）を作り、そこに非同期処理専用のエンジン（イベントループ）を据え付けて、
+  │# 24時間営業（run_forever）の受付窓口（_runner）をオープンさせる」という動きをしています。
+  │# このおかげで、メインのプログラム（AutoGenの会話など）が動いている間も、裏側でNotionとの通信が
+  │# 途切れることなくスムーズに行われます。
+  │
+  │# このコードは、「MCPクライアント専用の『非同期イベントループ』を別スレッド内で作成し、
+  │# 常駐させる（動かし続ける）」ための処理です。
+  │# バックグラウンドでNotionサーバーとの通信をリアルタイムに処理し続けるための「心臓部」を
+  │# 起動させる役割を担っています。
+...def _thread_main(self):
+  │def _thread_main(self):
+  │    # このスレッド専用の新しい「イベントループ」（非同期処理を管理する仕組み）を作成し、変数に保存します。
+  │    self._loop = asyncio.new_event_loop()
+  │    # 作成したループを、このスレッドの「標準のループ」として登録します。
+  │    # これにより、これ以降このスレッド内で実行される非同期処理がこのループ上で動くようになります。
+  │    asyncio.set_event_loop(self._loop)
+  │    # メインの通信処理である _runner()（サーバーへの接続、ツールの取得、待機などを行う関数）を、
+  │    # ループ内で実行されるタスクとして登録します。
+  │    self._loop.create_task(self._runner())
+  │    # ループを永続的に起動します。 これにより、プログラムが終了を命じられるまで、
+  │    # このスレッドは停止することなくMCPサーバーとのメッセージのやり取り（Notion操作の実行など）を
+  │    # 待ち受け続け、処理できる状態になります。
+  │    self._loop.run_forever()
+  │
+...async def _runner(self):
+  │# 全体のまとめ
+  │# この関数は「Notionサーバーの起動 → 接続 → 使える機能の確認 → メインプログラムへの通知 → 接続維持」
+  │# という、MCP連携における一連のセットアップから維持までを一手に引き受けています。
+  │# この処理が裏で動いているおかげで、AIはいつでもNotionのツールを呼び出すことができるようになります。
+  │# このコードは、「MCPサーバー（Notionツール）との通信チャネルを確立し、初期設定を完了させ、
+  │# 終了の指示があるまで接続を維持する」という、クライアントの「中核となる動作フロー」を定義しています。
+  │# async（非同期関数）として定義されており、バックグラウンドのスレッドで実行されます。
+  │async def _runner(self):
+  │    # 終了シグナルを待機するための「停止ボタン」を作成します。
+  │    self._shutdown = asyncio.Event()
+  │
+  │    # サーバー起動: npx コマンドを使ってNotion MCPサーバーを起動し、標準入出力（stdio）を通じて通信を開始します。
+  │    async with stdio_client(self.server_params) as (read, write):
+  │        # セッション開始: 起動したサーバーとやり取りするための「会話の枠組み（セッション）」を作ります。
+  │        async with ClientSession(read, write) as session:
+  │            # 初期化: サーバーと握手（ハンドシェイク）を行い、お互いのバージョン確認などを済ませて
+  │            # 通信可能な状態にします。
+  │            await session.initialize()
+  │            self._session = session
+  │
+  │            # ツール取得: サーバーから「ページ作成」「検索」などの利用可能な機能一覧（ツールリスト）を取得し、
+  │            # クラス変数に保存します。これでAIが何ができるかを知る準備が整います。
+  │            resp = await session.list_tools()
+  │            self.tools = resp.tools
+  │
+  │            # 準備完了の合図: メインスレッドで待機している start() 関数に対し、
+  │            # 「接続と初期化が終わったので、もうツールを使っても大丈夫です！」と通知します。
+  │            self._ready.set()
+  │            # 常駐待機: ここでプログラムが止まった状態（待機状態）になります。これにより接続が維持されます。
+  │            # close() メソッドが呼ばれて _shutdown イベントがセットされるまでこの接続をキープし続けます。
+  │            await self._shutdown.wait()
+  │
+...async def _async_shutdown(self):
+  │async def _async_shutdown(self):
+  │    if self._shutdown:
+  │        self._shutdown.set()
+  └─────────────────────────────────────────────
+
+..def format_tools_for_prompt(mcp_tools) -> str:┃
+# 全体の役割
+# この関数は、いわば「AIのための道具カタログ作成係」です。
+# MCPサーバーが持つ構造化されたデータ（プログラム用のデータ）を、AIが読んで理解できる「説明書」へと翻訳しています。
+# これをシステムプロンプトに組み込むことで、AIは正確にNotionなどの外部ツールを操作できるようになります。
+
+# このコードは、「MCPサーバーから取得したツールの情報を、AI（LLM）が正しく理解・利用できるように、
+# テキスト（Markdown形式のリスト）に整形する」ための補助関数です。
+# AIは「どんなツールがあり、それぞれどんな引数が必要か」をプロンプトとして受け取ることで、
+# 初めてそのツールを呼び出せるようになります。
+━━━━━━━━━━━━━━━━━━━━━━━┓
+def format_tools_for_prompt(mcp_tools) -> str:┃
+━┯━━━━━━━━━━━━━━━━━━━━━┛
+  │# LLMが「tool_name と arguments」を正しく作れるように、一覧をプロンプトへ渡す
+  │lines = [] # 整形した各ツールの情報を一時的に溜めておくためのリスト
+  │
+  │# 取得したツール一覧（mcp_tools）から、ツールを1つずつ取り出してループ処理します。
+  ├┬──────────┐
+  ││for t in mcp_tools: │
+  ├┴┬─────────┘
+  │  │# 以下の3つの情報を1つの文字列（リスト項目）として整形し、追加します。
+  │  │lines.append(
+  │  │    # name: ツールの名前（例：create_notion_page）。AIがツールを呼び出す際のIDになります。
+  │  │    f"- name: {t.name}\n"
+  │  │    # description: ツールの説明。AIはこの説明を読んで、「今このツールを使うべきか」を判断します。
+  │  │    f"  description: {t.description}\n"
+  │  ├───────────────────────────
+  │  │# inputSchema: 引数の定義（JSON Schema）。AIはこれを見て、
+  │  │#「どんな項目（タイトルや本文など）を、どんなデータ型（文字列や数値）で送るべきか」を知ります。
+  │  │# json.dumps(..., ensure_ascii=False): スキーマ（辞書形式）をJSON文字列に変換します。
+  │  │# 日本語が含まれていてもそのまま表示されるように設定されています。
+  │  │    f"  inputSchema: {json.dumps(t.inputSchema, ensure_ascii=False)}\n"
+  │  │)
+  │  └────
+  │return "\n".join(lines)
+  └───────────
+
+..def main():
+━━━━━━┓
+def main(): ┃
+━┳━━━━┛
+  ┣━━━━━━━━━━━━━━━┓
+  ┃# NOTION_TOKEN を読む         ┃
+  ┃notion token <-- NOTION_TOKEN ┃
+  ┣┯━━━━━━━━━━━━━━┛
+  ┃│load_dotenv()                 
+  ┃│notion_token = os.getenv("NOTION_TOKEN") 
+  ┃│if not notion_token:
+  ┃│  raise RuntimeError("NOTION_TOKEN is not set in environment variables/.env")
+  ┃└──────────────────────────
+  ┣━━━━━━━━━━━━━━┓  ┌───
+  ┃# MCP(Notion)を常駐起動     ┃  │mcp_client = McpNotionClient(notion_api_key=notion_token
+  ┃mcp_client = McpNotionClient┠─┤print("Starting Notion MCP server...")
+  ┃mcp_client.start()          ┃  │mcp_client.start()
+  ┣━━━━━━━━━━━━━━┛  │print(f"Connected. MCP tools: {len(mcp_client.tools)}")
+  ┃                                └────────────────────────────
+  ┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+  ┃# MCPのToolsをOpenAIが読める形式に変換する                ┃
+  ┃tools_catalog = format_tools_for_prompt(mcp_client.tools) ┃
+  ┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+  ┣━━━━━━━━━━━━━━┓      ┌─
+  ┃# AutoGen 設定              ┠───┤llm_config = {
+　┃（OpenAIキーは環境変数から）┃      │    "config_list": [
+  ┣━━━━━━━━━━━━━━┛      │        {
+  ┃                                    │            "model": "gpt-4o",
+  ┃                                    │        }
+  ┃                                    │    ],
+  ┃                                    │    "temperature": 0,
+  ┃                                    │}
+  ┃                                    └──────────
+  ┃# Assitant Agentの役割を設定する
+  ┣━━━━━━━━┓
+  ┃# system_message┃
+  ┣┯━━━━━━━┛
+  ┃│system_message = (
+  ┃│  "You are an assistant that manipulates Notion via Notion MCP tools.\n"
+  ┃│  "You must use the function `mcp_call_tool(tool_name, arguments)` to execute tools.\n"
+  ┃│  "Select the correct tool_name from the catalog and pass arguments
+  ┃│      that match inputSchema.\n\n"
+  ┃│  "MCP tool catalog:\n"
+  ┃│  f"{tools_catalog}\n"
+  ┃│)
+  ┃└───────────────────────
+  ┃
+  ┣━━━━━━━━━━━━┓    ┌
+  ┃# Assistant Agentを     ┠──┤assistant = autogen.AssistantAgent(
+  ┃　作成・設定　　        ┃    │    name="assistant",
+  ┣━━━━━━━━━━━━┛    │    llm_config=llm_config,
+  ┃                              │    system_message=system_message,
+  ┃                              │)
+  ┃                              └
+  ┣━━━━━━━━━━━━━━━━━━┓  ┌
+  ┃# ユーザーの代理人となるエージェント┠─┤user_proxy = autogen.UserProxyAgent(
+  ┃（UserProxyAgent）」を作成・設定　  ┃  │    name="user_proxy",
+  ┣━━━━━━━━━━━━━━━━━━┛  │    human_input_mode="NEVER",
+  ┃                                        │    code_execution_config=False,
+  ┃                                        │    max_consecutive_auto_reply=5,
+  ┃                                        │)
+  ┃                                        └
+  ┃ 
+  ┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+  ┃# AutoGen に「実行できる関数」として登録（= LLMがfunction callingで呼べる） ┃
+  ┣┯━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+  ┃│@user_proxy.register_for_execution()
+  ┃│@assistant.register_for_llm(description="Call a Notion MCP tool by name with JSON arguments.")
+  ┃│def mcp_call_tool(tool_name: str, arguments: dict) -> dict:
+  ┃│    tool_name: MCPのツール名（catalogのname）
+  ┃│    arguments: inputSchemaに一致するJSON引数
+  ┃│    result = mcp_client.call_tool(tool_name, arguments)
+  ┃│    # MCPの返り値は独自型の場合があるので、念のため dict/str に寄せる
+  ┃│    try:
+  ┃│        return json.loads(json.dumps(result, default=lambda o: getattr(o, "__dict__", str(o))))
+  ┃│    except Exception:
+  ┃│        return {"result": str(result)}
+  ┃└────────────────────────────────────────────────
+  ┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+  ┃# ユーザー指示                                                              ┃
+  ┃user_prompt = "Notionのページ（ID: 1a0aad9ae143406989bb12705ba1d58b）の中に ┃
+　┃　　　　『2025年の目標Test2』というタイトルの新しいページを作って。"        ┃
+  ┃# tryを実行し、エラーになってもfinallyにもどって！                          ┃
+  ┃try:                                                                        ┃
+　┃　　# user_proxy は指示を assistant にメッセージとして送信する              ┃
+  ┃    user_proxy.initiate_chat(assistant, message=user_prompt)　# 対話の開始  ┃
+  ┃finally:                                                                    ┃
+  ┃    mcp_client.close() # MCPサーバーとの接続を閉じる                        ┃
+  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+        
+..if __name__ == "__main__":
+# Pythonプログラムにおける「お決まりの書き方」                             
+# 「このファイルが直接実行された時だけ、main() 関数を呼び出す」という意味。
+━━━━━━━━━━━━━━━┓
+if __name__ == "__main__":    ┃
+    main()                    ┃
+━━━━━━━━━━━━━━━┛
