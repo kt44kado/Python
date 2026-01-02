@@ -84,6 +84,22 @@ def format_tools_for_prompt(mcp_tools) -> str:
         )
     return "\n".join(lines)
 
+def print_mcp_tools_list(mcp_tools):
+    """
+    MCPサーバーから取得したツールの一覧をコンソールに表示する
+    """
+    print("\n" + "="*50)
+    print(f"【Notion MCP 操作ツール一覧表】 合計: {len(mcp_tools)}個")
+    print("="*50)
+    
+    for i, tool in enumerate(mcp_tools, 1):
+        print(f"{i}. ツール名: {tool.name}")
+        print(f"   機能概要: {tool.description}")
+        # スキーマが複雑な場合は、プロパティ名だけ抽出すると見やすくなります
+        required_params = tool.inputSchema.get("required", [])
+        print(f"   必須引数: {required_params}")
+        print("-" * 50)
+    print("一覧の出力が完了しました。\n")
 
 async def main():
     load_dotenv()
@@ -98,6 +114,9 @@ async def main():
     mcp_client = McpNotionClient(notion_api_key=notion_token)
     print("Starting Notion MCP server...")
     mcp_client.start()
+    # --- ここで追加した関数を呼び出す ---
+    print_mcp_tools_list(mcp_client.tools)
+    # ---------------------------------
     print(f"Connected. MCP tools: {len(mcp_client.tools)}")
 
     tools_catalog = format_tools_for_prompt(mcp_client.tools)
@@ -113,7 +132,20 @@ async def main():
     # OpenAI model client（環境変数 OPENAI_API_KEY を使用）
     model_client = OpenAIChatCompletionClient(model="gpt-4o")
 
+    def log_tool_call(tool_name: str, arguments: dict):
+        """
+        AIエージェントがMCPツールに対して発行した具体的な指示内容をフォーマットして表示する
+        """
+        print("\n" + "🚀" * 20)
+        print(f"【AI Agent -> MCP Server 指示詳細】")
+        print(f"呼出ツール: {tool_name}")
+        print(f"引数内容  : {json.dumps(arguments, indent=2, ensure_ascii=False)}")
+        print("🚀" * 20 + "\n")
+
     def mcp_call_tool(tool_name: str, arguments: dict) -> dict:
+        # 自作のログ関数を呼び出し
+        log_tool_call(tool_name, arguments)
+
         result = mcp_client.call_tool(tool_name, arguments)
         try:
             return json.loads(json.dumps(result, default=lambda o: getattr(o, "__dict__", str(o))))
@@ -125,6 +157,7 @@ async def main():
     name="mcp_call_tool",
     # description="Call a Notion MCP tool by name with JSON arguments.",
     description="Notionを操作するためにこのツールを必ず使用してください。'tool_name'には実行したいAPI名を、'arguments'にはそのAPIに必要な引数を辞書形式で渡してください。例: mcp_call_tool(tool_name='API-post-page', arguments={'parent': {...}, 'properties': {...}})",
+
     )
 
     assistant = AssistantAgent(
