@@ -1,6 +1,7 @@
-# AutoGen_Notin01.pyで途中経過のデータを出力させる
+# プロンプトのテスト用バージョン
 import os
 import json
+import pandas as pd
 import threading
 import asyncio
 from dotenv import load_dotenv
@@ -85,22 +86,68 @@ def format_tools_for_prompt(mcp_tools) -> str:
         )
     return "\n".join(lines)
 
-def print_mcp_tools_list(mcp_tools):
+def format_mcp_notion_data(msg):
     """
-    MCPサーバーから取得したツールの一覧をコンソールに表示する
+    MCPの戻り値(msg)からNotionの検査データを抽出し、整形されたDataFrameを返す
     """
-    print("\n" + "="*50)
-    print(f"【Notion MCP 操作ツール一覧表】 合計: {len(mcp_tools)}個")
-    print("="*50)
+    # 1. msgからJSON文字列を抽出して辞書に変換
+    # msg['content']はリストなので、最初の要素の'text'を取得
+    try:
+        raw_json_str = msg['content'][0]['text']
+        data = json.loads(raw_json_str)
+    except (KeyError, IndexError, json.JSONDecodeError) as e:
+        return f"データの解析に失敗しました: {e}"
+
+    def get_v(props, name):
+        """Notionのプロパティ型に応じて値を取り出すヘルパー"""
+        p = props.get(name, {})
+        p_type = p.get('type')
+        
+        if p_type == 'number':
+            return p.get('number')
+        if p_type == 'formula':
+            return p.get('formula', {}).get('string')
+        if p_type == 'date':
+            return p.get('date', {}).get('start')
+        if p_type == 'title':
+            titles = p.get('title', [])
+            return titles[0].get('plain_text') if titles else ""
+        return None
+
+    # 2. 各ページ(行)のデータを整形
+    rows = []
+    for page in data.get('results', []):
+        props = page.get('properties', {})
+        
+        # 必要な項目を抽出
+        row = {
+            "名前": get_v(props, "名前"),
+            "期日": get_v(props, "期日"),
+            "尿素窒素": f"{get_v(props, '尿素窒素')} ({get_v(props, '尿素窒判定')})",
+            "クレアチン": f"{get_v(props, 'クレアチン')} ({get_v(props, 'クレアチン判定')})",
+            "尿酸": f"{get_v(props, '尿酸')} ({get_v(props, '尿酸判定')})",
+            "中性脂肪": f"{get_v(props, '中性脂肪')} ({get_v(props, '中性脂肪判定')})",
+            "LDL(悪玉)": f"{get_v(props, 'LDL(悪玉)')} ({get_v(props, 'LDL判定')})",
+            "HDL(善玉)": f"{get_v(props, 'HDL(善玉)')} ({get_v(props, 'HDL判定')})",
+            "総コレステロール": f"{get_v(props, '総コレステロール')} ({get_v(props, '総コレステロール判定')})",
+            "MCHC": f"{get_v(props, 'MCHC')} ({get_v(props, 'MCHC判定')})"
+        }
+        rows.append(row)
+
+    # 3. DataFrameの作成とクレンジング
+    df = pd.DataFrame(rows)
     
-    for i, tool in enumerate(mcp_tools, 1):
-        print(f"{i}. ツール名: {tool.name}")
-        print(f"   機能概要: {tool.description}")
-        # スキーマが複雑な場合は、プロパティ名だけ抽出すると見やすくなります
-        required_params = tool.inputSchema.get("required", [])
-        print(f"   必須引数: {required_params}")
-        print("-" * 50)
-    print("一覧の出力が完了しました。\n")
+    # 不要な文字列の置換とソート
+    df = df.replace(to_replace=r'None \(.*\)', value='-', regex=True)
+    df = df.replace('None', '-')
+    df = df.sort_values("期日", ascending=False).reset_index(drop=True)
+    
+    return df
+
+# --- 使い方 ---
+# msg = result.chat_message  # MCPからの戻り値
+# df = format_mcp_notion_data(msg)
+# print(df.to_markdown())    
 
 async def main():
     load_dotenv()
@@ -115,9 +162,6 @@ async def main():
     mcp_client = McpNotionClient(notion_api_key=notion_token)
     print("Starting Notion MCP server...")
     mcp_client.start()
-    # --- ここで追加した関数を呼び出す ---
-    print_mcp_tools_list(mcp_client.tools)
-    # ---------------------------------
     print(f"Connected. MCP tools: {len(mcp_client.tools)}")
 
     tools_catalog = format_tools_for_prompt(mcp_client.tools)
@@ -133,20 +177,7 @@ async def main():
     # OpenAI model client（環境変数 OPENAI_API_KEY を使用）
     model_client = OpenAIChatCompletionClient(model="gpt-4o")
 
-    def log_tool_call(tool_name: str, arguments: dict):
-        """
-        AIエージェントがMCPツールに対して発行した具体的な指示内容をフォーマットして表示する
-        """
-        print("\n" + "🚀" * 20)
-        print(f"【AI Agent -> MCP Server 指示詳細】")
-        print(f"呼出ツール: {tool_name}")
-        print(f"引数内容  : {json.dumps(arguments, indent=2, ensure_ascii=False)}")
-        print("🚀" * 20 + "\n")
-
     def mcp_call_tool(tool_name: str, arguments: dict) -> dict:
-        # 自作のログ関数を呼び出し
-        log_tool_call(tool_name, arguments)
-
         result = mcp_client.call_tool(tool_name, arguments)
         try:
             return json.loads(json.dumps(result, default=lambda o: getattr(o, "__dict__", str(o))))
@@ -158,7 +189,6 @@ async def main():
     name="mcp_call_tool",
     # description="Call a Notion MCP tool by name with JSON arguments.",
     description="Notionを操作するためにこのツールを必ず使用してください。'tool_name'には実行したいAPI名を、'arguments'にはそのAPIに必要な引数を辞書形式で渡してください。例: mcp_call_tool(tool_name='API-post-page', arguments={'parent': {...}, 'properties': {...}})",
-
     )
 
     assistant = AssistantAgent(
@@ -168,7 +198,9 @@ async def main():
         tools=[mcp_tool],
     )
 
-    user_prompt = "Notionのページ（ID: 1a0aad9ae143406989bb12705ba1d58b）の中に、『2025年の目標Test2』というタイトルの新しいページを作って。"
+    # user_prompt = "Notionのページ（ID: 1a0aad9ae143406989bb12705ba1d58b）の中に、『2025年の目標Test2』というタイトルの新しいページを作って。"
+    # user_prompt = "Notionのページ（ID: 1a0aad9ae143406989bb12705ba1d58b）の中のブロックを全て出力して。"
+    user_prompt = "Notionのデータソ－ス（ID: 5881ca7d-506e-42ce-a57c-674a1ed8b566)のデータを3行だけ出力して。"
 
     try:
         token = CancellationToken()
@@ -196,6 +228,11 @@ async def main():
         else:
             # 通常会話のみの場合
             print("message:", getattr(msg, "content", msg))
+
+            # --- 整形する場合の使い方 ---注）エラーがでる
+            # msg = result.chat_message  # MCPからの戻り値
+            # df = format_mcp_notion_data(msg)
+            # print(df.to_markdown())
 
     finally:
         mcp_client.close()
