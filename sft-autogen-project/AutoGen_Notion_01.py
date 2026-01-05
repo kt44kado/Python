@@ -28,6 +28,10 @@ class McpNotionClient:
             command="npx",
             args=["-y", "@notionhq/notion-mcp-server"],
             env={**os.environ, 
+                 #"HTTP_PROXY": "http://172.22.32.41:8080",
+                 #"HTTPS_PROXY": "http://172.22.32.41:8080",
+                 "HTTP_PROXY": os.getenv("HTTP_PROXY"),
+                 "HTTPS_PROXY": os.getenv("HTTPS_PROXY"),
                  "NOTION_API_KEY": self.notion_api_key
                 },
         )
