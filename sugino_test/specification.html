@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>マルチエージェントシステム仕様書</title>
+    <style>
+        :root {
+            --primary-color: #2c3e50;
+            --secondary-color: #3498db;
+            --accent-color: #e74c3c;
+            --bg-color: #f4f6f7;
+            --text-color: #333;
+            --card-bg: #fff;
+        }
+
+        body {
+            font-family: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, sans-serif;
+            line-height: 1.6;
+            color: var(--text-color);
+            background-color: var(--bg-color);
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: var(--card-bg);
+            padding: 40px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            color: var(--primary-color);
+            border-bottom: 2px solid var(--secondary-color);
+            padding-bottom: 10px;
+            margin-bottom: 30px;
+        }
+
+        h2 {
+            color: var(--primary-color);
+            margin-top: 30px;
+            border-left: 5px solid var(--secondary-color);
+            padding-left: 10px;
+        }
+
+        h3 {
+            color: var(--secondary-color);
+            margin-top: 20px;
+        }
+
+        details {
+            background-color: #f9f9f9;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            margin-bottom: 10px;
+            transition: all 0.3s ease;
+        }
+
+        details[open] {
+            background-color: #fff;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        summary {
+            cursor: pointer;
+            font-weight: bold;
+            color: var(--primary-color);
+            outline: none;
+        }
+
+        summary:hover {
+            color: var(--secondary-color);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+
+        th,
+        td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+
+        th {
+            background-color: var(--primary-color);
+            color: #fff;
+        }
+
+        tr:nth-child(even) {
+            background-color: #f2f2f2;
+        }
+
+        code {
+            background-color: #eee;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-family: Consolas, monospace;
+            color: #c7254e;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            color: #fff;
+            margin-left: 5px;
+        }
+
+        .badge-agent {
+            background-color: var(--secondary-color);
+        }
+
+        .badge-tool {
+            background-color: var(--accent-color);
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>マルチエージェントシステム プログラム仕様書</h1>
+
+        <p>本ドキュメントは、StreamlitおよびAutoGenを用いたマルチエージェントシステムの仕様を記述したものです。</p>
+
+        <h2>1. システム概要</h2>
+        <p>ユーザーが入力したテーマやPDFファイルの内容に基づき、複数の専門エージェントが議論を行い、結論を導き出すシステムです。特にデータベース（Dr.Sum）との連携機能を持ち、在庫状況などのリアルタイムなデータ取得が可能です。
+        </p>
+
+        <h2>2. エージェント構成</h2>
+        <p>以下のエージェントが定義されています。クリックして詳細を確認できます。</p>
+
+        <details>
+            <summary>オーケストレーター <span class="badge badge-agent">Manager</span></summary>
+            <ul>
+                <li><strong>役割:</strong> 議論の進行管理、要約、発言者の指名。</li>
+                <li><strong>システムメッセージ:</strong> ユーザーの入力を要約し、最初に発言すべきエージェントを指名。議論終了時に提案をまとめる。</li>
+            </ul>
+        </details>
+
+        <details>
+            <summary>受注情報(VWSDT0100) <span class="badge badge-agent">Specialist</span></summary>
+            <ul>
+                <li><strong>役割:</strong> 受注情報に関する専門家。</li>
+                <li><strong>対象データ:</strong> <code>z00_情報系DB</code> の <code>VWSDT0100</code> ビュー。</li>
+                <li><strong>制約:</strong> 指定されたビュー以外へのアクセス禁止。カラム名不明時は <code>get_schema</code> を使用。</li>
+            </ul>
+        </details>
+
+        <details>
+            <summary>購買発注(VWMMT0100) <span class="badge badge-agent">Specialist</span></summary>
+            <ul>
+                <li><strong>役割:</strong> 購買発注に関する専門家。</li>
+                <li><strong>対象データ:</strong> <code>z00_情報系DB</code> の <code>VWMMT0100</code> ビュー。</li>
+                <li><strong>制約:</strong> 指定されたビュー以外へのアクセス禁止。カラム名不明時は <code>get_schema</code> を使用。</li>
+            </ul>
+        </details>
+
+        <details>
+            <summary>在庫状況照会 <span class="badge badge-agent">Tool User</span></summary>
+            <ul>
+                <li><strong>役割:</strong> 在庫状況の照会。Dr.Sumツールを使用可能。</li>
+                <li><strong>対象データ:</strong> <code>z00_情報系DB</code> の <code>V_在庫状況照会</code> ビュー。</li>
+                <li><strong>使用可能ツール:</strong> <code>execute_select</code>, <code>get_schema</code> 等。</li>
+                <li><strong>制約:</strong> 指定されたビュー以外へのアクセス禁止。推測での回答禁止。</li>
+            </ul>
+        </details>
+
+        <details>
+            <summary>品目マスタ(VWMMM0100) <span class="badge badge-agent">Specialist</span></summary>
+            <ul>
+                <li><strong>役割:</strong> 品目マスタに関する専門家。</li>
+                <li><strong>対象データ:</strong> <code>z00_情報系DB</code> の <code>VWMMM0100</code> ビュー。</li>
+                <li><strong>制約:</strong> 指定されたビュー以外へのアクセス禁止。カラム名不明時は <code>get_schema</code> を使用。</li>
+            </ul>
+        </details>
+
+        <details>
+            <summary>User <span class="badge badge-agent">Proxy</span></summary>
+            <ul>
+                <li><strong>役割:</strong> ユーザープロキシ。ツールの実行を担当。</li>
+                <li><strong>設定:</strong> 自動返信最大10回。Docker不使用。</li>
+            </ul>
+        </details>
+
+        <h2>3. 使用可能ツール (Dr.Sum連携)</h2>
+        <p>「在庫状況照会」エージェントが使用できるツール群です。</p>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>ツール名</th>
+                    <th>説明</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>get_database_list</code></td>
+                    <td>データベースの一覧を取得します。</td>
+                </tr>
+                <tr>
+                    <td><code>get_table_list</code></td>
+                    <td>指定されたデータベース内のテーブル/ビュー一覧を取得します。</td>
+                </tr>
+                <tr>
+                    <td><code>get_schema</code></td>
+                    <td>指定されたテーブル/ビューのカラム定義（スキーマ）を取得します。</td>
+                </tr>
+                <tr>
+                    <td><code>execute_select</code></td>
+                    <td>SELECT文を実行してデータを取得します。</td>
+                </tr>
+                <tr>
+                    <td><code>measure_select</code></td>
+                    <td>SELECT文を複数回実行し、実行時間の統計を取得します。</td>
+                </tr>
+                <tr>
+                    <td><code>get_view_definition</code></td>
+                    <td>ビューのSQL定義を取得します。</td>
+                </tr>
+                <tr>
+                    <td><code>get_sql_specification</code></td>
+                    <td>Dr.SumのSQL仕様を取得します。</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h2>4. アプリケーションフロー (UI)</h2>
+        <details open>
+            <summary>画面構成と処理フロー</summary>
+            <ol>
+                <li><strong>初期設定:</strong> 環境変数読み込み、Azure OpenAI設定。</li>
+                <li><strong>サイドバー/メインエリア:</strong>
+                    <ul>
+                        <li>エージェント選択 (マルチセレクト)</li>
+                        <li>テーマ入力 (テキスト入力)</li>
+                        <li>参照ファイルパス入力 (PDF読み込み用)</li>
+                    </ul>
+                </li>
+                <li><strong>インプット処理:</strong>
+                    <ul>
+                        <li>「エージェントへインプット」ボタン押下。</li>
+                        <li>PDFがある場合はテキスト抽出。</li>
+                        <li>ユーザーメッセージを作成 (PDF内容 + テーマ)。</li>
+                        <li>GroupChatおよびManagerの初期化。</li>
+                        <li><code>initiate_chat</code> で会話開始。</li>
+                    </ul>
+                </li>
+                <li><strong>議論開始:</strong>
+                    <ul>
+                        <li>「ディスカッションを開始します」ボタン押下。</li>
+                        <li>チャット履歴の表示 (エージェントごとに色分け・アイコン表示)。</li>
+                    </ul>
+                </li>
+                <li><strong>フォローアップ:</strong>
+                    <ul>
+                        <li>追加質問入力フォーム。</li>
+                        <li>送信時、履歴を保持したまま (<code>clear_history=False</code>) 会話を再開。</li>
+                    </ul>
+                </li>
+            </ol>
+        </details>
+
+        <h2>5. ファイル構成</h2>
+        <ul>
+            <li><code>app.py</code>: Streamlitアプリケーション本体。UIとメインロジック。</li>
+            <li><code>agents.py</code>: エージェント定義、システムメッセージ生成、ツール登録。</li>
+            <li><code>drsum_tools.py</code>: Dr.Sum MCPサーバーとの連携ツール定義。</li>
+        </ul>
+    </div>
+    <script>
+        // シンプルなインタラクション（必要に応じて追加）
+        console.log("Specification loaded.");
+    </script>
+</body>
+
+</html>

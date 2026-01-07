@@ -1,177 +1,196 @@
 import asyncio
+import json
 import os
-from typing import Any, Dict, Optional
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp import ClientSession
 
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.ui import Console
+from autogen_ext.models.openai import AzureOpenAIChatCompletionClient
 from autogen_core.tools import FunctionTool
 
-# Azure OpenAI 用（autogen-ext）
-from autogen_ext.models.openai import AzureOpenAIChatCompletionClient
+
+def _require_env(name: str) -> str:
+    v = os.getenv(name)
+    if not v:
+        raise RuntimeError(f"環境変数 {name} が未設定です。.env を確認してください。")
+    return v
 
 
-# ====== 設定 ======
-MCP_SERVER_DIR = r"c:\drsum-mcp-server"
-
-# ★ここをあなたの Dr.Sum MCP Server の起動方法に合わせて修正してください
-MCP_SERVER_ENTRY = ["python", r"server.py"]
-
-TARGET_DATABASE: Optional[str] = None  # 固定するなら "SalesDB" など
+def _optional_env(name: str) -> str | None:
+    v = os.getenv(name)
+    return v if v else None
 
 
-class MCPBridge:
-    """MCP stdio サーバーへ接続して、list_tools / call_tool を提供する薄いブリッジ。"""
+def _mcp_result_to_plain_dict(result) -> dict:
+    content_out = []
+    for c in (result.content or []):
+        if hasattr(c, "text"):
+            content_out.append(c.text)
+        elif hasattr(c, "model_dump"):
+            content_out.append(c.model_dump())
+        else:
+            content_out.append(str(c))
+    return {"isError": bool(getattr(result, "isError", False)), "content": content_out}
 
-    def __init__(self, server_params: StdioServerParameters):
-        self._server_params = server_params
-        self._session: Optional[ClientSession] = None
-        self._stack = None
 
-    async def __aenter__(self):
-        self._stack = stdio_client(self._server_params)
-        read, write = await self._stack.__aenter__()
-
-        self._session = ClientSession(read, write)
-        await self._session.__aenter__()
-        await self._session.initialize()
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        if self._session:
-            await self._session.__aexit__(exc_type, exc, tb)
-        if self._stack:
-            await self._stack.__aexit__(exc_type, exc, tb)
-
-    async def list_tools(self) -> Dict[str, Any]:
-        assert self._session is not None
-        tools = await self._session.list_tools()
-        return {
-            "tools": [
-                {
-                    "name": t.name,
-                    "description": t.description,
-                    "inputSchema": t.inputSchema,
-                }
-                for t in tools.tools
-            ]
-        }
-
-    async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
-        assert self._session is not None
-        res = await self._session.call_tool(name, arguments)
-        return res.model_dump()
+def _schema_properties(schema: dict) -> set[str]:
+    # MCP tool の inputSchema は JSON Schema 互換の想定
+    props = schema.get("properties", {}) if isinstance(schema, dict) else {}
+    return set(props.keys())
 
 
 async def main():
-    # .env を環境変数へ読み込み（カレントディレクトリの .env を想定）
     load_dotenv()
 
-    deployment_name = os.getenv("DEPLOYMENT_NAME")
-    api_key = os.getenv("API_KEY")
-    api_endpoint = os.getenv("API_ENDPOINT")
-    api_version = os.getenv("API_VERSION")
+    # Azure OpenAI
+    deployment = _require_env("DEPLOYMENT_NAME")
+    api_key = _require_env("API_KEY")
+    endpoint = _require_env("API_ENDPOINT")
+    api_version = os.getenv("API_VERSION", "2024-12-01-preview")
+    model_name = _require_env("DEFAULT_MODEL_NAME")
 
-    missing = [k for k, v in {
-        "DEPLOYMENT_NAME": deployment_name,
-        "API_KEY": api_key,
-        "API_ENDPOINT": api_endpoint,
-        "API_VERSION": api_version,
-    }.items() if not v]
-    if missing:
-        raise RuntimeError(f".env の値が不足しています: {missing}")
-
-    # Dr.Sum MCP サーバー起動パラメータ
-    env = os.environ.copy()
-    server_params = StdioServerParameters(
-        command=MCP_SERVER_ENTRY[0],
-        args=MCP_SERVER_ENTRY[1:],
-        cwd=MCP_SERVER_DIR,
-        env=env,
+    model_client = AzureOpenAIChatCompletionClient(
+        azure_endpoint=endpoint,
+        api_key=api_key,
+        api_version=api_version,
+        azure_deployment=deployment,
+        model=model_name,
     )
+    # Dr.Sum 認証情報（ユーザID/パスワード）
+    drsum_user = _require_env("DRSUM_USER")
+    drsum_password = _require_env("DRSUM_PASSWORD")
+    drsum_host = _optional_env("DRSUM_HOST")
+    drsum_port = _optional_env("DRSUM_PORT")
 
-    async with MCPBridge(server_params) as mcp:
+    # Dr.Sum MCP Server jar
+    mcp_dir = Path(r"c:\drsum-mcp-server")
+    jar_path = mcp_dir / "drsum-local-mcp-server-1.1.00.0000.jar"
+    if not jar_path.exists():
+        raise FileNotFoundError(f"jar が見つかりません: {jar_path}")
 
-        async def mcp_list_tools() -> Dict[str, Any]:
-            """MCP サーバーが提供するツール一覧を返す。"""
-            return await mcp.list_tools()
+    # 注意:
+    # jar 側が「起動引数で認証モード/ID/PWを渡す」設計の場合は、ここに追記が必要です。
+    # 例: ["java","-jar",..., "--user", drsum_user, "--password", drsum_password]
+    cmd = ["java", "-jar", str(jar_path),"--user", drsum_user, "--password", drsum_password]
 
-        async def mcp_call_tool(tool_name: str, tool_args: Dict[str, Any]) -> Any:
-            """任意の MCP ツールを tool_name/args で呼び出す。"""
-            return await mcp.call_tool(tool_name, tool_args)
+    async with stdio_client(cmd, cwd=str(mcp_dir)) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
 
-        tools = [
-            FunctionTool(
-                mcp_list_tools,
-                name="mcp_list_tools",
-                description="List available tools exposed by the Dr.Sum MCP server.",
-            ),
-            FunctionTool(
-                mcp_call_tool,
-                name="mcp_call_tool",
-                description=(
-                    "Call an MCP tool by name with JSON arguments. "
-                    "Use after discovering tool names via mcp_list_tools."
+            # tool schema を保持して、呼び出し時に user/password を注入できるようにする
+            tool_schema_map: dict[str, dict] = {}
+
+            async def mcp_list_tools() -> str:
+                tools = await session.list_tools()
+                tool_schema_map.clear()
+                for t in tools.tools:
+                    tool_schema_map[t.name] = t.inputSchema or {}
+                payload = {
+                    "tools": [
+                        {
+                            "name": t.name,
+                            "description": t.description,
+                            "inputSchema": t.inputSchema,
+                        }
+                        for t in tools.tools
+                    ]
+                }
+                return json.dumps(payload, ensure_ascii=False, indent=2)
+
+            def _inject_auth_if_needed(tool_name: str, args: dict) -> dict:
+                schema = tool_schema_map.get(tool_name) or {}
+                props = _schema_properties(schema)
+
+                # よくあるキー名候補に対して自動注入（無い場合のみ）
+                candidates_user = ["user", "userid", "userId", "username", "loginId", "login_id"]
+                candidates_pass = ["password", "pass", "pwd"]
+
+                if any(k in props for k in candidates_user):
+                    for k in candidates_user:
+                        if k in props and k not in args:
+                            args[k] = drsum_user
+                            break
+
+                if any(k in props for k in candidates_pass):
+                    for k in candidates_pass:
+                        if k in props and k not in args:
+                            args[k] = drsum_password
+                            break
+
+                # 接続先が必要な tool の場合のみ注入（設定してあるときだけ）
+                if drsum_host:
+                    for k in ["host", "server", "hostname", "endpoint"]:
+                        if k in props and k not in args:
+                            args[k] = drsum_host
+                            break
+                if drsum_port:
+                    for k in ["port"]:
+                        if k in props and k not in args:
+                            # 数値要求の可能性があるため int 変換を試みる
+                            try:
+                                args[k] = int(drsum_port)
+                            except ValueError:
+                                args[k] = drsum_port
+                            break
+
+                return args
+
+            async def mcp_call_tool(name: str, arguments_json: str = "{}") -> str:
+                try:
+                    arguments = json.loads(arguments_json) if arguments_json else {}
+                except json.JSONDecodeError as e:
+                    return json.dumps(
+                        {"isError": True, "content": [f"arguments_json が不正な JSON です: {e}"]},
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+
+                # user/password 等がスキーマ上必要そうなら自動注入
+                arguments = _inject_auth_if_needed(name, arguments)
+
+                result = await session.call_tool(name, arguments)
+                payload = _mcp_result_to_plain_dict(result)
+                return json.dumps(payload, ensure_ascii=False, indent=2)
+
+            tools = [
+                FunctionTool(mcp_list_tools, name="mcp_list_tools", description="MCPサーバーが提供するtools一覧を取得する"),
+                FunctionTool(
+                    mcp_call_tool,
+                    name="mcp_call_tool",
+                    description="指定したMCP toolを呼び出す。arguments_json は tool の inputSchema に従う JSON 文字列。",
                 ),
-            ),
-        ]
+            ]
 
-        # Azure OpenAI（.env の値を使用）
-        model_client = AzureOpenAIChatCompletionClient(
-            azure_endpoint=api_endpoint,
-            api_key=api_key,
-            api_version=api_version,
-            azure_deployment=deployment_name,
-            # model は論理名として必要になることがあります。通常はベースモデル名か deployment 名を指定。
-            model="gpt-4o",
-            temperature=0,
-        )
+            assistant = AssistantAgent(
+                name="assistant",
+                model_client=model_client,
+                tools=tools,
+            )
 
-        system_message = """You are an assistant that explores Dr.Sum via a local MCP server.
-First call mcp_list_tools, then use mcp_call_tool to:
-- list databases
-- list tables and views in the target database
-- fetch sample data (top N rows) for a few objects
-Return results in structured JSON and short explanation in Japanese.
-If a required tool does not exist, explain what tool is missing based on mcp_list_tools output.
-"""
-
-        assistant = AssistantAgent(
-            name="drsum_assistant",
-            model_client=model_client,
-            tools=tools,
-            system_message=system_message,
-        )
-
-        if TARGET_DATABASE:
-            task = f"""
-Dr.Sum を MCP 経由で調査してください。
-対象DB: {TARGET_DATABASE}
-
-手順:
-1) mcp_list_tools でツールを確認
-2) DB一覧取得
-3) 対象DBのテーブル一覧・ビュー一覧を取得
-4) 代表的なテーブル/ビューを2〜3個選び、各オブジェクトから先頭5行を取得（もしくは rowcount）
-結果を JSON でまとめてください。
-"""
-        else:
             task = """
-Dr.Sum を MCP 経由で調査してください。
 
-手順:
-1) mcp_list_tools でツールを確認
-2) DB一覧取得
-3) 最初のDBを選び、そのDBのテーブル一覧・ビュー一覧を取得
-4) 代表的なテーブル/ビューを2〜3個選び、各オブジェクトから先頭5行を取得（もしくは rowcount）
-結果を JSON でまとめてください。
+あなたは Dr.Sum のローカル MCP サーバー経由でメタデータ/データを取得します（ユーザID/パスワード認証）。
+以下の手順で実行し、結果を日本語で整理して出力してください。
+
+1) mcp_list_tools で利用可能な tool 一覧と inputSchema を確認する
+2) 「login / connect / open_session」等の認証・接続確立が必要そうな tool があれば、それを最初に実行する
+   - user/password 等の引数が必要なら inputSchema に従って指定する（省略時はクライアント側で自動注入される）
+3) DB(またはカタログ/スキーマ)一覧を取得する
+4) その中の1つを対象に、テーブル一覧とビュー一覧を取得する
+5) 代表として最初に見つかったテーブル（またはビュー）から先頭5行を取得する
+   - 「SQL実行」系 tool があれば SELECT で先頭5行を取得してよい
+
+注意:
+- tool 呼び出しは必ず mcp_call_tool を使うこと
+- 取得結果が空/権限エラーの場合は、その旨と次に確認すべき点（認証/権限/対象名/接続先）を出すこと
 """
 
-        await Console(assistant.run_stream(task=task))
+            await Console(assistant.run_stream(task=task))
 
 
 if __name__ == "__main__":
