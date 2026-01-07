@@ -16,7 +16,7 @@ SERVER_PARAMS = StdioServerParameters(
         "--host=eaasys031s",
         "--port=6001",
         "--user=z21070",
-        "--password=21070Kei"
+        "--password=*******"
     ],
     env=None
 )
