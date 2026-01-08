@@ -1,4 +1,4 @@
-## AutoGenとDr.Sum-MCPを使った原型バージョン
+# 原型はtaskが長いので、Agentに役割を教えて、taskを短くするバージョン
 import asyncio
 import json
 import os
@@ -176,29 +176,49 @@ async def main():
                 ),
             ]
 
+            ROLE_INSTRUCTIONS = """
+あなたは「Dr.Sum MCP クライアント専任アシスタント」です。
+目的：Dr.Sum のローカル MCP サーバー経由で、メタデータの把握と少量データの確認を行い、結果を日本語で分かりやすく報告します。
+
+【ツール利用ルール】
+- MCPのツール呼び出しは必ず FunctionTool『mcp_call_tool』経由で行うこと。
+- 最初に『mcp_list_tools』で利用可能なツール名と inputSchema を把握すること。
+- 認証／接続確立が必要そうなツールが存在する場合は、最初にそれを実行すること。
+  - user/password/host/port はクライアントから自動注入される（inputSchema にキーがある場合）。
+- 標準手順：
+  1) DB（またはカタログ／スキーマ）一覧を取得
+  2) 1つ選んでテーブル一覧（tableType=0）とビュー一覧（tableType=1）を取得
+  3) 代表として先頭のテーブル（またはビュー）から先頭5行を確認（execute_select で limit=5）
+  4) 必要に応じて get_schema / get_view_definition で補足情報を取得
+
+【出力形式】
+- 「概要」→「詳細結果」→「次アクション提案」の順で日本語で整理。
+- 実行したツール名と引数を箇条書きで併記（再現性のため）。
+- 取得データの先頭行はテーブル風に整形（可能な範囲で）。
+- エラーや空結果時は、認証／権限／対象名／接続先などの確認ポイントを明記。
+
+【注意】
+- SELECT 以外のSQLは実行しない（execute_select は読み取り専用）。
+- トークン消費を抑えるため、limit は小さめ（まず 5）。
+- 機密情報（パスワード等）を出力に含めない。
+"""
+
             assistant = AssistantAgent(
                 name="assistant",
-                model_client=model_client,
-                tools=tools,
+                model_client=model_client,  # AzureOpenAIChatCompletionClient
+                tools=tools,           # mcp_list_tools / mcp_call_tool
+                system_message=ROLE_INSTRUCTIONS,  # ← 役割を固定
+                # instructions=ROLE_INSTRUCTIONS,  # ← 役割（system）を固定
             )
 
             task = """
-
-あなたは Dr.Sum のローカル MCP サーバー経由でメタデータ/データを取得します（ユーザID/パスワード認証）。
-以下の手順で実行し、結果を日本語で整理して出力してください。
-
-1) mcp_list_tools で利用可能な tool 一覧と inputSchema を確認する
-2) 「login / connect / open_session」等の認証・接続確立が必要そうな tool があれば、それを最初に実行する
-   - user/password 等の引数が必要なら inputSchema に従って指定する（省略時はクライアント側で自動注入される）
-3) DB(またはカタログ/スキーマ)一覧を取得する
-4) その中の1つを対象に、テーブル一覧とビュー一覧を取得する
-5) 代表として最初に見つかったテーブル（またはビュー）から先頭5行を取得する
-   - 「SQL実行」系 tool があれば SELECT で先頭5行を取得してよい
-
-注意:
-- tool 呼び出しは必ず mcp_call_tool を使うこと
-- 取得結果が空/権限エラーの場合は、その旨と次に確認すべき点（認証/権限/対象名/接続先）を出すこと
+目的：DB一覧を取得し、先頭のDBからテーブル一覧／ビュー一覧を列挙。代表テーブルの先頭5行を確認して、日本語で要約→詳細→次アクションの順に報告してください。
 """
+
+            # task = """
+#目的：DB一覧を取得し、先頭のDBからテーブル一覧／ビュー一覧を出し、代表テーブルの先頭5行を確認して報告してください。
+#出力は日本語で、要約→結果→次アクションの順に。
+#"""
 
             await Console(assistant.run_stream(task=task))
 
