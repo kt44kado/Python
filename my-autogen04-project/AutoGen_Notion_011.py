@@ -117,6 +117,16 @@ async def main():
     mcp_client.start()
     # --- ここで追加した関数を呼び出す ---
     print_mcp_tools_list(mcp_client.tools)
+
+    # `inputSchema` を取る（OpenAIに言われたので）
+    print("===inputSchema===")
+    for t in mcp_client.tools:
+        if t.name in ["API-query-data-source", "API-post-page"]:
+            print("name:", t.name)
+            print("description:", t.description)
+            print("inputSchema:", json.dumps(t.inputSchema, ensure_ascii=False, indent=2))
+
+
     # ---------------------------------
     print(f"Connected. MCP tools: {len(mcp_client.tools)}")
 
