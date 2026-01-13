@@ -125,7 +125,7 @@ def get_assistant():
     model_client = OpenAIChatCompletionClient(model="gpt-5-mini")
 
     # ツール関数定義
-    def mcp_call_tool(tool_name: str, arguments: dict) -> disct:
+    def mcp_call_tool(tool_name: str, arguments: dict) -> dict:
         result = mcp_client.call_tool(tool_name, arguments)
         # JSON変換ロジック...
         return result
