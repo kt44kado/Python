@@ -1,8 +1,7 @@
-# Notion 対話型エージェント　捏造対策バージョン  →　捏造は直ったが、動作はエラーばかり
+# Notion 対話型エージェントバージョン　test2のClaude版
 
 import os
 import json
-import jsonschema
 import threading
 
 from mcp import ClientSession, StdioServerParameters
@@ -15,10 +14,11 @@ from autogen_core import CancellationToken
 from autogen_core.tools import FunctionTool
 
 from autogen_agentchat.agents import AssistantAgent
-from autogen_ext.models.openai import OpenAIChatCompletionClient
+# from autogen_ext.models.openai import OpenAIChatCompletionClient
+from autogen_ext.models.anthropic import AnthropicChatCompletionClient
 from autogen_agentchat.messages import TextMessage
 from autogen_agentchat.agents import AssistantAgent
-from typing import Any, Optional
+
 
 class McpNotionClient:
     def __init__(self, notion_api_key: str):
@@ -92,63 +92,6 @@ def format_tools_for_prompt(mcp_tools) -> str:
         )
     return "\n".join(lines)
 
-def _json_dump_if_needed(x):
-    # dict/list を JSON文字列に
-    if isinstance(x, (dict, list)):
-        return json.dumps(x, ensure_ascii=False)
-    return x
-
-def normalize_mcp_args(tool_name: str, args: dict) -> dict:
-    """
-    notion-mcp-server のスキーマ都合で
-    icon/cover が "string(format: json)"、children が "array of string" になっているケースを吸収。
-    """
-    if not isinstance(args, dict):
-        return args
-
-    # API-post-page の典型：icon/cover は JSON 文字列になっていることがある
-    if tool_name == "API-post-page":
-        if "icon" in args:
-            args["icon"] = _json_dump_if_needed(args["icon"])
-        if "cover" in args:
-            args["cover"] = _json_dump_if_needed(args["cover"])
-
-        # children: schemaだと items が string なので、dict のまま渡すと弾かれる可能性がある
-        if "children" in args and isinstance(args["children"], list):
-            args["children"] = [_json_dump_if_needed(b) for b in args["children"]]
-
-    return args
-
-def make_mcp_function_tool(mcp_client, mcp_tool_def):
-    input_schema = mcp_tool_def.inputSchema
-
-    def _call(arguments: Optional[dict] = None, **kwargs: Any) -> dict:
-        # LLMが arguments={...} で渡してきても、parent=... で渡してきても吸収
-        payload = {}
-        if isinstance(arguments, dict):
-            payload.update(arguments)
-        payload.update(kwargs)
-
-        # 任意：前に入れた正規化（children/icon/cover 等）を使うならここで
-        # payload = normalize_mcp_args(mcp_tool_def.name, payload)
-
-        # 入力検証（入れているなら）
-        jsonschema.validate(instance=payload, schema=input_schema)
-
-        result = mcp_client.call_tool(mcp_tool_def.name, payload)
-
-        try:
-            return result.model_dump()
-        except Exception:
-            if hasattr(result, "content"):
-                return {"content": result.content, "isError": getattr(result, "isError", False)}
-            return {"result": result}
-
-    return FunctionTool(
-        _call,
-        name=mcp_tool_def.name,          # 例: "API-post-page"
-        description=mcp_tool_def.description,
-    )
 
 st.set_page_config(page_title="AutoGen x Streamlit App", layout="centered")
 st.title("🤖 AutoGen 対話型エージェント")
@@ -164,31 +107,78 @@ def get_mcp_client():
 # --- キャッシュ対象2: エージェントとツールの構築 ---
 @st.cache_resource
 def get_assistant():
-    mcp_client = get_mcp_client()
-
-    # system_message が壊れていたので """ """ で確実に入れる
+    mcp_client = get_mcp_client() # キャッシュされたクライアントを取得
+    
+    # ツールカタログの作成
     tools_catalog = format_tools_for_prompt(mcp_client.tools)
-    system_message = f"""You are an assistant that manipulates Notion via MCP tools.
+#    system_message = f"You are an assistant that manipulates Notion via Notion MCP tools.\n"
+#    "You MUST call the tool `mcp_call_tool(tool_name, arguments)` to execute actions.\n"
+#    "Choose tool_name from the catalog and pass arguments matching inputSchema.\n\n"
+#    "MCP tool catalog:\nCatalog:\n{tools_catalog}"
 
-RULES:
-- To perform any Notion action, you MUST call one of the provided tools.
-- NEVER invent tool names. Only call the tools provided to you.
-- For each tool call, pass arguments that match the tool's inputSchema.
-
-MCP tool catalog (reference):
-{tools_catalog}
-"""
-
-    model_client = OpenAIChatCompletionClient(model="gpt-5-mini")
-
-    notion_tools = [make_mcp_function_tool(mcp_client, t) for t in mcp_client.tools]
-
-    assistant = AssistantAgent(
-        name="assistant",
-        system_message=system_message,
-        model_client=model_client,
-        tools=notion_tools,   # ← ここが重要：mcp_call_tool 1個ではなく全ツールを列挙
+    system_message = (
+    "You are a Notion expert assistant equipped with MCP tools.\n"
+    "Your goal is to fulfill user requests by efficiently managing Notion content.\n\n"
+    
+    "## Operational Guidelines:\n"
+    "1. **ID-First Approach**: Always use unique IDs (e.g., page_id, database_id) for operations. "
+    "If an ID is not provided, use the `search` tool to find the correct entity first.\n"
+    "2. **Chain of Thought**: Before calling a tool, briefly analyze the necessary steps. "
+    "For complex tasks (e.g., 'Move this task to the Done database'), search for both the item and the target database first.\n"
+    "3. **Error Handling**: If a tool call fails due to '404 Not Found' or 'Unauthorized', "
+    "explain to the user that the integration may lack access to that specific page and ask them to 'Share' it with the integration.\n"
+    "4. **Data Integrity**: When creating or updating content, ensure all required properties match the schema provided in the tool catalog.\n\n"
+    
+    f"## MCP Tool Catalog:\n{tools_catalog}"
     )
+
+    
+    # model_client = OpenAIChatCompletionClient(model="gpt-5-mini")
+
+    # ツール関数定義
+    def mcp_call_tool(tool_name: str, arguments: dict) -> dict:
+        result = mcp_client.call_tool(tool_name, arguments)
+        # JSON変換ロジック...
+        return result
+
+    mcp_tool = FunctionTool(
+        mcp_call_tool,
+        name="mcp_call_tool",
+        description="Notionを操作するためにこのツールを必ず使用してください。'tool_name'には実行したいAPI名を、'arguments'にはそのAPIに必要な引数を辞書形式で渡してください。例: mcp_call_tool(tool_name='API-post-page', arguments={'parent': {...}, 'properties': {...}})",
+    )
+
+    # エージェント作成
+    def get_model_client():
+        # st.secretsからAPIキーを取得して渡す
+        api_key = st.secrets["ANTHROPIC_API_KEY"]
+    
+        return AnthropicChatCompletionClient(
+        #    model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-5-20250929",
+        #    model="claude-haiku-4-5-20251001",
+            api_key=api_key, # 明示的に指定
+            temperature=0.7,
+        )
+    if "agent" not in st.session_state:
+        client = get_model_client()
+        st.session_state.agent = AssistantAgent(
+            name="assistant",
+            model_client=client, # ここにClaude用のクライアントを渡す
+            system_message=system_message,
+            tools=[mcp_tool],
+        )
+        return st.session_state.agent
+    
+#    assistant = AssistantAgent(
+#        name="assistant",
+#        system_message=system_message,
+#        llm_config={
+#            "config_list": config_list,
+#            "temperature": 0.7,
+#        },
+#        # model_client=model_client,
+#        tools=[mcp_tool],
+#    )
     return assistant
 
 # --- メイン処理 ---
