@@ -57,20 +57,6 @@ async def main():
         temperature=0.2,
     )
 
-    # Azure OpenAI
-#    deployment = _require_env("DEPLOYMENT_NAME")
-#    api_key = _require_env("API_KEY")
-#    endpoint = _require_env("API_ENDPOINT")
-#    api_version = os.getenv("API_VERSION", "2024-12-01-preview")
-#    model_name = _require_env("DEFAULT_MODEL_NAME")
-
-#    model_client = AzureOpenAIChatCompletionClient(
-#        azure_endpoint=endpoint,
-#        api_key=api_key,
-#        api_version=api_version,
-#        azure_deployment=deployment,
-#        model=model_name,
-#    )
     # Dr.Sum 認証情報（ユーザID/パスワード）
     drsum_user = _require_env("DRSUM_USER")
     drsum_password = _require_env("DRSUM_PASSWORD")
@@ -220,10 +206,6 @@ async def main():
 目的：DB一覧を取得し、先頭のDBからテーブル一覧／ビュー一覧を列挙。代表テーブルの先頭5行を確認して、日本語で要約→詳細→次アクションの順に報告してください。
 """
 
-            # task = """
-#目的：DB一覧を取得し、先頭のDBからテーブル一覧／ビュー一覧を出し、代表テーブルの先頭5行を確認して報告してください。
-#出力は日本語で、要約→結果→次アクションの順に。
-#"""
 
             await Console(assistant.run_stream(task=task))
 
