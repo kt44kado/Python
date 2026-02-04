@@ -9,6 +9,9 @@ from dotenv import load_dotenv
 from mcp.client.stdio import stdio_client
 from mcp import ClientSession, StdioServerParameters
 
+import truststore
+truststore.inject_into_ssl()
+
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.ui import Console
 # from autogen_ext.models.openai import AzureOpenAIChatCompletionClient
@@ -203,9 +206,17 @@ async def main():
             )
 
             task = """
-目的：DB一覧を取得し、先頭のDBからテーブル一覧／ビュー一覧を列挙。代表テーブルの先頭5行を確認して、日本語で要約→詳細→次アクションの順に報告してください。
+先ほど取得したDB一覧の先頭は「a50_経営管理部DB」でした。
+mcp_call_toolで get_table_list を呼び、databaseName="a50_経営管理部DB", tableType=0, limit=2000 でテーブル一覧を取得して列挙してください。
 """
-
+#            目的：DB一覧を取得し、先頭のDB名を1つ選び、そのDBのテーブル一覧(tableType=0)を取得して列挙してください。
+#手順：
+#1) mcp_call_tool で get_database_list を呼ぶ（limit=50）
+#2) 返ったリストの先頭 databaseName を使って get_table_list を呼ぶ（tableType=0, limit=2000）
+#"""
+#            task = """
+#目的：DB一覧を取得し、先頭のDBからテーブル一覧／ビュー一覧を列挙。代表テーブルの先頭5行を確認して、日本語で要約→詳細→次アクションの順に報告してください。
+#"""
 
             await Console(assistant.run_stream(task=task))
 
