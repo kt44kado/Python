@@ -19,14 +19,14 @@ from autogen_ext.models.anthropic import AnthropicChatCompletionClient
 from autogen_core.tools import FunctionTool
 
 
-def require_env(name: str) -> str:
+def _require_env(name: str) -> str:
     v = os.getenv(name)
     if not v:
         raise RuntimeError(f"環境変数 {name} が未設定です。.env を確認してください。")
     return v
 
 
-def optional_env(name: str) -> str | None:
+def _optional_env(name: str) -> str | None:
     v = os.getenv(name)
     return v if v else None
 
@@ -38,7 +38,7 @@ def try_parse_json(x):
             return x
     return x
 
-def mcp_result_to_plain_dict(result) -> dict:
+def _mcp_result_to_plain_dict(result) -> dict:
     content_out = []
     for c in (result.content or []):
         if hasattr(c, "text"):
@@ -50,7 +50,7 @@ def mcp_result_to_plain_dict(result) -> dict:
             content_out.append(try_parse_json(str(c)))
     return {"isError": bool(getattr(result, "isError", False)), "content": content_out}
 
-def schema_properties(schema: dict) -> set[str]:
+def _schema_properties(schema: dict) -> set[str]:
     # MCP tool の inputSchema は JSON Schema 互換の想定
     props = schema.get("properties", {}) if isinstance(schema, dict) else {}
     return set(props.keys())
@@ -67,10 +67,10 @@ async def main():
     )
 
     # Dr.Sum 認証情報（ユーザID/パスワード）
-    drsum_user = require_env("DRSUM_USER")
-    drsum_password = require_env("DRSUM_PASSWORD")
-    drsum_host = optional_env("DRSUM_HOST")
-    drsum_port = optional_env("DRSUM_PORT")
+    drsum_user = _require_env("DRSUM_USER")
+    drsum_password = _require_env("DRSUM_PASSWORD")
+    drsum_host = _optional_env("DRSUM_HOST")
+    drsum_port = _optional_env("DRSUM_PORT")
 
     # Configuration for the Dr.Sum MCP Server
     args = [
@@ -116,7 +116,7 @@ async def main():
 
             def inject_auth_if_needed(tool_name: str, args: dict) -> dict:
                 schema = tool_schema_map.get(tool_name) or {}
-                props = schema_properties(schema)
+                props = _schema_properties(schema)
 
                 # よくあるキー名候補に対して自動注入（無い場合のみ）
                 candidates_user = ["user", "userid", "userId", "username", "loginId", "login_id"]
@@ -169,7 +169,7 @@ async def main():
                 # user/password 等がスキーマ上必要そうなら自動注入
                 arguments = inject_auth_if_needed(name, arguments)
                 result = await session.call_tool(name, arguments)
-                return mcp_result_to_plain_dict(result)
+                return _mcp_result_to_plain_dict(result)
 
             tools = [
                 FunctionTool(mcp_list_tools, name="mcp_list_tools", description="MCPサーバーが提供するtools一覧を取得する"),
@@ -235,6 +235,5 @@ async def main():
             await Console(assistant.run_stream(task=task))
 
 
-if name == "main":
-#if __name__ == "__main__":
+if __name__ == "__main__":
     asyncio.run(main())
