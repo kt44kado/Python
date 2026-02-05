@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from mcp.client.stdio import stdio_client
 from mcp import ClientSession, StdioServerParameters
 
-import truststore
+import truststore #これと次行を入れて、Dr.Sum MCPが使えるようになった
 truststore.inject_into_ssl()
 
 from autogen_agentchat.agents import AssistantAgent

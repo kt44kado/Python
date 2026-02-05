@@ -1,4 +1,8 @@
-# 原型はtaskが長いので、Agentに役割を教えて、taskを短くするバージョン <--エラーを何度も修正して動いた　2026/2/5
+# 原型はtaskが長いので、Agentに役割を教えて、taskを短くするバージョン 
+# Claude版でエラーを何度も修正して動いたものをOpenAIへ移植した
+# Azure OpenAIでは、カラムの型 文字列型（Verchar）type=0が、数値型となるので
+# `ROLE_INSTRUCTIONS` に 【Dr.Sum スキーマ type コード定義】を追加して正常化した　2026/2/5
+
 import asyncio
 import json
 import os
@@ -12,14 +16,14 @@ from mcp import ClientSession, StdioServerParameters
 from requests import session
 import truststore
 
+#from asyncio import tools
 truststore.inject_into_ssl()
 
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.ui import Console
-# from autogen_ext.models.openai import AzureOpenAIChatCompletionClient
-from autogen_ext.models.anthropic import AnthropicChatCompletionClient
+from autogen_ext.models.openai import AzureOpenAIChatCompletionClient
+# from autogen_ext.models.anthropic import AnthropicChatCompletionClient
 from autogen_core.tools import FunctionTool
-
 
 def _require_env(name: str) -> str:
     v = os.getenv(name)
@@ -58,11 +62,19 @@ def _schema_properties(schema: dict) -> set[str]:
 async def main():
     load_dotenv()
 
-    # Claude
-    def get_model_client():
-    # 環境変数 ANTHROPIC_API_KEY が設定されている前提
-        return AnthropicChatCompletionClient(
-        model="claude-sonnet-4-5-20250929",
+    # Azure OpenAI
+    deployment = _require_env("DEPLOYMENT_NAME")
+    api_key = _require_env("API_KEY")
+    endpoint = _require_env("API_ENDPOINT")
+    api_version = os.getenv("API_VERSION", "2024-12-01-preview")
+    model_name = _require_env("DEFAULT_MODEL_NAME")
+
+    model_client = AzureOpenAIChatCompletionClient(
+        azure_endpoint=endpoint,
+        api_key=api_key,
+        api_version=api_version,
+        azure_deployment=deployment,
+        model=model_name,
         temperature=0.2,
     )
 
@@ -251,10 +263,10 @@ async def main():
 - 機密情報（パスワード等）を出力に含めない。
 """
 
-            client = get_model_client()
+            client = model_client
             assistant = AssistantAgent(
                 name="assistant",
-                model_client=client,  # AnthropicChatCompletionClient
+                model_client=client,  # AzureOpenAIChatCompletionClient
                 tools=agent_tools,           # mcp_list_tools / mcp_call_tool
                 system_message=ROLE_INSTRUCTIONS,  # ← 役割を固定
                 reflect_on_tool_use=True,   # ★ツール結果を見て次の手に進む
