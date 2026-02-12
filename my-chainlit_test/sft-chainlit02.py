@@ -1,9 +1,10 @@
-# chainlit + AutoGen(OpenAI)のサンプル
-# chainlit run chainlit02.py -w
+# chainlit + AutoGen(Azure OpenAI)のサンプル
+# chainlit run sft-chainlit02.py -w
 import os
 import chainlit as cl
 from autogen_agentchat.agents import AssistantAgent
-from autogen_ext.models.openai import OpenAIChatCompletionClient
+# 1. Azure用のClientに差し替え
+from autogen_ext.models.openai import AzureOpenAIChatCompletionClient 
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -11,11 +12,12 @@ load_dotenv()
 @cl.on_chat_start
 async def setup_agent():
     # モデルクライアントの設定
-    model_client = OpenAIChatCompletionClient(
-        model="gpt-4o",
-        api_key=os.environ.get("OPENAI_API_KEY"),
+    model_client = AzureOpenAIChatCompletionClient(
+        model=os.getenv("DEPLOYMENT_NAME"),          # Azureポータルでのデプロイ名
+        api_key=os.getenv("API_KEY"),
+        azure_endpoint=os.getenv("API_ENDPOINT"),
+        api_version=os.getenv("API_VERSION"),  # またはお使いのバージョン
     )
-
     # エージェントの定義
     agent = AssistantAgent(
         name="assistant",
