@@ -11,28 +11,31 @@ load_dotenv()
 
 @cl.on_chat_start
 async def setup_agent():
-    # モデルクライアントの設定
+    # 1. モデルクライアントを一度だけ作成（キャッシュの役割）
+    # これを関数の外（グローバル）に出しても良いですが、
+    # セッションごとに設定を変えたい場合はここで行います。
     model_client = AzureOpenAIChatCompletionClient(
         model=os.getenv("DEPLOYMENT_NAME"),          # Azureポータルでのデプロイ名
         api_key=os.getenv("API_KEY"),
         azure_endpoint=os.getenv("API_ENDPOINT"),
         api_version=os.getenv("API_VERSION"),  # またはお使いのバージョン
     )
-    # エージェントの定義
+    # 2. エージェントの作成（model_clientを内部で保持・キャッシュ）
     agent = AssistantAgent(
         name="assistant",
         model_client=model_client,
         system_message="あなたは親切なAIアシスタントです。"
     )
-
+    # 3. セッションに保存
     cl.user_session.set("agent", agent)
 
 @cl.on_message
 async def run_conversation(message: cl.Message):
+    # 4. キャッシュされたエージェントを取り出す
     agent = cl.user_session.get("agent")
 
-    # ユーザーのメッセージを投げて応答を取得
+    # エージェントを実行（履歴などはagent内部のmodel_clientが管理）
     result = await agent.run(task=message.content)
 
-    # 最新のメッセージ内容を送信
+    # 応答を送信
     await cl.Message(content=result.messages[-1].content, author="Assistant").send()
