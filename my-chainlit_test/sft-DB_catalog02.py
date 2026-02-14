@@ -185,7 +185,6 @@ async def setup_agent():
     drsum_user = _require_env("DRSUM_USER")
     drsum_password = _require_env("DRSUM_PASSWORD")
     drsum_host = _optional_env("DRSUM_HOST")
-    print(drsum_host)
     
     drsum_port = _optional_env("DRSUM_PORT")
 
