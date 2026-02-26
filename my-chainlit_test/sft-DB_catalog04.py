@@ -1,4 +1,4 @@
-# chainlit run sft-DB_catalog036.py
+# chainlit run sft-DB_catalog04.py
 # chainlit + AutoGen(Azure OpenAI) + MCP のサンプル
 # 接続が切れてしまうコードになっていたので、Copilotに手直ししてもらった
 # それを辞書テーブル参照するDBカタログに改修
@@ -20,13 +20,13 @@ import sys
 import requests
 import chainlit as cl
 from dotenv import load_dotenv
-import truststore
+# import truststore
 
 from autogen_agentchat.agents import AssistantAgent
 from autogen_ext.models.openai import AzureOpenAIChatCompletionClient
 from autogen_core.tools import FunctionTool
 
-truststore.inject_into_ssl()
+# truststore.inject_into_ssl()
 load_dotenv()
 
 def _require_env(name: str) -> str:
@@ -128,9 +128,18 @@ async def setup_agent():
     # Bridge接続用コンテキストの作成
     mcp_ctx = MCPBridgeContext(bridge_url, drsum_user, drsum_password, drsum_host, drsum_port)
 
+    # name引数を明示的に指定し、descriptionをより詳細にします
     agent_tools = [
-        FunctionTool(mcp_ctx.list_tools_json, name="mcp_list_tools", description="MCPサーバーが提供するtools一覧を取得する"),
-        FunctionTool(mcp_ctx.call_tool_json, name="mcp_call_tool", description="指定したMCP toolを呼び出す。arguments(dict)形式で指定すること。"),
+        FunctionTool(
+            mcp_ctx.list_tools_json, 
+            name="mcp_list_tools", 
+            description="MCPサーバーから利用可能なDr.Sum操作ツール（execute_select等）の一覧を取得します。引数は不要です。"
+        ),
+        FunctionTool(
+            mcp_ctx.call_tool_json, 
+            name="mcp_call_tool", 
+            description="指定した名称のツールを呼び出します。name(str)とarguments(dict)の2つの引数が必要です。例: name='execute_select', arguments={'selectStatement': '...', 'databaseName': '...'}"
+        ),
     ]
 
     # プロンプト（ROLE_INSTRUCTIONS）は元の定義を維持
@@ -146,12 +155,13 @@ async def setup_agent():
 2. M_COLUMN_DICTIONARY (カラム辞書): column_physical_name, column_logical_name, pii_flag など
 3. M_CODE_MASTER (コード辞書): column_logical_name, code, name など（※ユーザから変換要求があった場合のみ使用）
 4. 情報系DBクエリ (クエリ辞書): object_physical_name, query (オブジェクト作成時のSQL)
+※詳細なスキーマは必要に応じて `get_schema` ツールで確認してください。
 
 ──────────────────────────────
 ■ 動作ステップと厳格なルール
 ──────────────────────────────
 【ステップ1：辞書探索（意味推論は禁止）】
-1. ユーザーの指定語をもとに、辞書に対して `execute_select` で文字列検索を行い、対象テーブルを探索します。
+1. ユーザーの指定語をもとに、辞書2表（テーブル辞書・カラム辞書）に対して `execute_select` で文字列検索（LIKE等）を行い、対象テーブルを探索します（無条件の全件先頭取得は行わない）。
 2. 同義語・表記揺れ（全角半角、カナひら等）の展開は許可しますが、業務的意味の推論はせず、文字列一致を正とします。
 3. 候補が複数ある場合は一覧と絞り込み条件を提示して終了します。
 4. 対象が1つに明確に特定できた場合、`security_level` を確認し、'pii'等の高機密であれば「実データ表示抑止」として理由を報告し、ここで終了します。
