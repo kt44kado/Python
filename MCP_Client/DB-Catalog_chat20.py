@@ -2,6 +2,7 @@
 DBカタログ(DrSumの辞書テーブル)自然言語チャットクライアント
     DB-Catalog_chat11.py システムプロンプトを外部ファイルにしたバージョン + 配布用
     DB-Catalog_chat12.py トークン量を表示するバージョン & 終了後に総トークンを表示してから画面を閉じる
+    DB-Catalog_chat13.py TOOLSを外部読込にしたバージョン
 基本機能:自然言語でDBカタログの探索を指示すると、辞書テーブルを参照して探索結果を回答する。
 追加予定機能:１．カラムの値（記号）を名称に変換する。２．テーブルを作成したクエリーを回答する。
 技術概要:Azure OpenAI の Function Calling を使い、DrSum MCP Bridge Server の
@@ -36,6 +37,15 @@ else:
 # .envのフルパスを指定して読み込む
 env_path = os.path.join(base_dir, ".env")
 load_dotenv(env_path)
+
+def load_tools_config(file_path="tools_config.json"):
+    """外部JSONからツール定義を読み込む"""
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"ツール定義の読み込みエラー: {e}")
+        sys.exit(1)
 
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
@@ -143,145 +153,6 @@ def call_get_view_definition(database_name: str, view_name: str) -> dict:
     return _call_mcp_tool("get_view_definition", {"databaseName": database_name, "viewName": view_name})
 
 
-# ── ツール定義（OpenAI Function Calling 用）────────────
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_database_list",
-            "description": (
-                "Dr.Sum サーバーにあるデータベースの一覧を返します。"
-                "「DB一覧を教えて」「どんなデータベースがある？」といった質問に使います。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_table_list",
-            "description": (
-                "指定したデータベースのテーブル・ビュー一覧を返します。"
-                "Type: 0=Table, 1=View, 2=Multiview, 3=Link table。"
-                "「○○DBにはどんなテーブルがある？」「テーブル一覧を教えて」といった質問に使います。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "database_name": {
-                        "type": "string",
-                        "description": "データベース名（例: 情報系DB）",
-                    },
-                },
-                "required": ["database_name"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_table_schema",
-            "description": (
-                "指定したデータベースとテーブルの列名・データ型の一覧を返します。"
-                "「○○テーブルの構成を教えて」「カラム一覧を見せて」といった質問に使います。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "database_name": {
-                        "type": "string",
-                        "description": "データベース名（例: 情報系DB）",
-                    },
-                    "table_name": {
-                        "type": "string",
-                        "description": "テーブル名（例: 売上データ）",
-                    },
-                },
-                "required": ["database_name", "table_name"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "execute_select",
-            "description": (
-                "Dr.Sum に対してSELECTクエリを実行し、結果を返します。"
-                "SELECT文のみ実行可能です（INSERT/UPDATE/DELETE等は不可）。"
-                "「○○テーブルのデータを見せて」「○○の合計を教えて」といった質問に使います。"
-                "重要: database_name にデータベース名を指定し、select_statement にはデータベース名を含めずテーブル名だけで記述してください。"
-                "例: database_name='情報系DB', select_statement='SELECT * FROM VWSDT0100 LIMIT 5'"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "database_name": {
-                        "type": "string",
-                        "description": "クエリ実行対象のデータベース名（例: 情報系DB）",
-                    },
-                    "select_statement": {
-                        "type": "string",
-                        "description": "実行するSELECT文。データベース名プレフィックスは付けず、テーブル名だけで記述する（例: SELECT * FROM VWSDT0100 LIMIT 5）",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "最大取得件数（デフォルト: 50、最大: 2000）。SELECT文内のLIMIT句の代わりにこちらを使用しても可。",
-                    },
-                },
-                "required": ["database_name", "select_statement"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_sql_specification",
-            "description": (
-                "Dr.Sum で使用可能な SQL 構文の仕様（関数、句、データ型など）を返します。"
-                "「Dr.SumのSQL仕様を教えて」「使える関数は？」といった質問に使います。"
-                "indexを指定すると特定の仕様を取得し、指定しないと目次を返します。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "index": {
-                        "type": "integer",
-                        "description": "取得する仕様のインデックス番号。省略すると目次を返す。",
-                    },
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_view_definition",
-            "description": (
-                "指定したビューのSQL定義を返します。テーブルやリンクテーブルには使えません。"
-                "「○○ビューの定義を教えて」といった質問に使います。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "database_name": {
-                        "type": "string",
-                        "description": "データベース名",
-                    },
-                    "view_name": {
-                        "type": "string",
-                        "description": "ビュー名",
-                    },
-                },
-                "required": ["database_name", "view_name"],
-            },
-        },
-    },
-]
 
 # ── ツール実行ディスパッチ ─────────────────────────────
 TOOL_FUNCTIONS = {
@@ -338,6 +209,9 @@ def load_system_prompt(file_path="system_prompt.txt"):
         sys.exit(1)
 
 SYSTEM_PROMPT_FILE = os.getenv("SYSTEM_PROMPT_FILE", "system_prompt.txt")
+
+# プログラム実行時に読み込み
+TOOLS = load__config("tools_config.json")
 
 # ── メイン会話ループ ───────────────────────────────────
 def chat_loop():
