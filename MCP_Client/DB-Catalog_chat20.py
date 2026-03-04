@@ -2,18 +2,21 @@
 DBカタログ(DrSumの辞書テーブル)自然言語チャットクライアント
     DB-Catalog_chat11.py システムプロンプトを外部ファイルにしたバージョン + 配布用
     DB-Catalog_chat12.py トークン量を表示するバージョン & 終了後に総トークンを表示してから画面を閉じる
-    DB-Catalog_chat13.py TOOLSを外部読込にしたバージョン
+    DB-Catalog_chat13.py TOOLSを外部読込にしたバージョン（たぶん、間違っているのでは？）
+    DB-Catalog_chat20.py TOOLS定義、システムプロンプト、call_mcp_toolの動作を変更し、DBカタログ用にしたバージョン
+    　また、TOOLS_CONFIG.jsonファイルも.env20を変更すると自動で変更される（コード修正不要）となっている
+
 基本機能:自然言語でDBカタログの探索を指示すると、辞書テーブルを参照して探索結果を回答する。
 追加予定機能:１．カラムの値（記号）を名称に変換する。２．テーブルを作成したクエリーを回答する。
 技術概要:Azure OpenAI の Function Calling を使い、DrSum MCP Bridge Server の
         API 呼び出しに変換して実行する。
 使い方:
-  1. .env ファイルを作成して環境変数を設定する。
+  1. .env20 ファイルを作成して環境変数を設定する。
   2. pip install -r requirements.txt を実行してライブラリをインストールする。
   3. python drsum_chat.py を実行する。
   注) 仮想フォルダ .venvを作成するのが望ましい。
   システムプロンプトを変更する場合は、system_prompt.txtとは別のファイル（例：`prompt_analysis.txt`）を作成し、
-  そこにプロンプトを記述してから、.envのSYSTEM_PROMPT_FILEにファイル名を指定してください。
+  そこにプロンプトを記述してから、.env20のSYSTEM_PROMPT_FILEにファイル名を指定してください。
 """
 
 import json
@@ -34,18 +37,23 @@ else:
     # 通常のPython実行の場合
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
-# .envのフルパスを指定して読み込む
-env_path = os.path.join(base_dir, ".env")
+# .env20のフルパスを指定して読み込む
+env_path = os.path.join(base_dir, ".env20")
 load_dotenv(env_path)
 
-def load_tools_config(file_path="tools_config.json"):
+# 1. 環境変数からファイル名を取得（なければデフォルト tools_config.json）
+TOOLS_CONFIG_FILE = os.getenv("TOOLS_CONFIG_FILE", "tools_config.json")
+
+# 2. 関数定義（ここは今のままでもOKですが、引数で受け取るようにします）
+def load_tools_config(file_path):
     """外部JSONからツール定義を読み込む"""
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        print(f"ツール定義の読み込みエラー: {e}")
+        print(f"ツール定義の読み込みエラー ({file_path}): {e}")
         sys.exit(1)
+
 
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
@@ -62,7 +70,7 @@ DRSUM_PORT = os.getenv("DRSUM_PORT")
 # ── Azure OpenAI クライアント初期化 ──────────────────
 def create_openai_client():
     if not AZURE_OPENAI_ENDPOINT or not AZURE_OPENAI_API_KEY:
-        print("エラー: AZURE_OPENAI_ENDPOINT と AZURE_OPENAI_API_KEY を .env に設定してください。")
+        print("エラー: AZURE_OPENAI_ENDPOINT と AZURE_OPENAI_API_KEY を .env20 に設定してください。")
         sys.exit(1)
     return AzureOpenAI(
         azure_endpoint=AZURE_OPENAI_ENDPOINT,
@@ -179,6 +187,13 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
             return json.dumps({"error": f"Unknown tool: {tool_name}"}, ensure_ascii=False)
 
         result = func(arguments)
+
+        # トークン節約のためのフィルタリング例・・・あまり変わらなかった
+        #if tool_name == "get_table_list":
+        #    # 名前とタイプだけに絞り、細かい属性を消す
+        #    filtered_result = [{"name": t["name"], "type": t["type"]} for t in result.get("tables", [])]
+        #    return json.dumps(filtered_result, ensure_ascii=False)
+    
         return json.dumps(result, ensure_ascii=False, indent=2)
     except requests.exceptions.ConnectionError:
         return json.dumps(
@@ -195,23 +210,27 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
 
 
 # ── システムプロンプト ─────────────────────────────────
-def load_system_prompt(file_path="system_prompt.txt"):
-    """外部ファイルからシステムプロンプトを読み込む"""
+# 1. まず環境変数を読み込んでおく
+SYSTEM_PROMPT_FILE = os.getenv("SYSTEM_PROMPT_FILE", "system_prompt.txt")
+
+# 2. 関数側で「指定がなければ環境変数の値を使う」ようにする
+def load_system_prompt(file_path=None):
+    # もし引数(file_path)が空なら、環境変数の値を入れる
+    if file_path is None:
+        file_path = SYSTEM_PROMPT_FILE
+    
     try:
-        # UTF-8で読み込み（日本語が含まれるため）
         with open(file_path, "r", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
-        print(f"警告: {file_path} が見つかりません。デフォルトのプロンプトを使用します。")
+        print(f"警告: {file_path} が見つかりません。")
         return "あなたはDr.Sumのアシスタントです。"
     except Exception as e:
         print(f"エラー: プロンプトの読み込み中に問題が発生しました: {e}")
         sys.exit(1)
 
-SYSTEM_PROMPT_FILE = os.getenv("SYSTEM_PROMPT_FILE", "system_prompt.txt")
-
-# プログラム実行時に読み込み
-TOOLS = load__config("tools_config.json")
+# プログラム実行時にTOOLS読み込み
+TOOLS = load_tools_config(TOOLS_CONFIG_FILE)
 
 # ── メイン会話ループ ───────────────────────────────────
 def chat_loop():
@@ -314,7 +333,7 @@ def chat_loop():
 # ── エントリーポイント ─────────────────────────────────
 if __name__ == "__main__":
     if not DRSUM_USER or not DRSUM_PASSWORD:
-        print("エラー: DRSUM_USER と DRSUM_PASSWORD を .env に設定してください。")
+        print("エラー: DRSUM_USER と DRSUM_PASSWORD を .env20 に設定してください。")
         sys.exit(1)
 
     chat_loop()
